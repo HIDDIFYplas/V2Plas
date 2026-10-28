@@ -1,0 +1,178 @@
+name: Build V2 Plas
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout v2rayNG (with submodules)
+        uses: actions/checkout@v4
+        with:
+          repository: 2dust/v2rayNG
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Go (for fallback libv2ray build)
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Show project structure
+        run: |
+          echo "== Root =="
+          ls -la
+          echo "== V2rayNG =="
+          ls -la V2rayNG
+          echo "== app =="
+          ls -la V2rayNG/app
+          echo "== SDK/NDK =="
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+          ls "$ANDROID_HOME/build-tools" || true
+          ls "$ANDROID_HOME/ndk" || true
+
+      # ---------- Rebrand ----------
+      - name: Rebrand (applicationId, app name, colors)
+        run: |
+          set -e
+          cd V2rayNG/app
+
+          # 1) applicationId
+          GRADLE_FILE=""
+          [ -f build.gradle.kts ] && GRADLE_FILE=build.gradle.kts
+          [ -f build.gradle ] && GRADLE_FILE=build.gradle
+          [ -z "$GRADLE_FILE" ] && { echo "ERROR: app gradle file not found"; exit 1; }
+
+          sed -i 's/applicationId = "com\.v2ray\.ang"/applicationId = "com.v2plas.app"/' "$GRADLE_FILE"
+          sed -i 's/applicationId "com\.v2ray\.ang"/applicationId "com.v2plas.app"/' "$GRADLE_FILE"
+          grep -n "applicationId" "$GRADLE_FILE"
+          if ! grep -q 'com.v2plas.app' "$GRADLE_FILE"; then
+            echo "ERROR: applicationId was not changed. Send me the lines printed above."
+            exit 1
+          fi
+
+          # 2) app name in every language file
+          for f in src/main/res/values*/strings.xml; do
+            sed -i -E 's|(<string name="app_name"[^>]*>)[^<]*(</string>)|\1V2 Plas\2|' "$f"
+          done
+          grep -rn 'name="app_name"' src/main/res/values*/strings.xml | head -5
+
+          # 3) blue/purple colors (only changes names that already exist)
+          for f in src/main/res/values/colors.xml; do
+            [ -f "$f" ] || continue
+            sed -i -E 's|(<color name="colorPrimary">)[^<]*|\1#5B3FD9|' "$f"
+            sed -i -E 's|(<color name="colorPrimaryDark">)[^<]*|\1#0A0E2A|' "$f"
+            sed -i -E 's|(<color name="colorAccent">)[^<]*|\1#3D8BFF|' "$f"
+          done
+          echo "Rebrand done."
+
+      # ---------- Native / core libraries ----------
+      - name: Get libv2ray.aar
+        run: |
+          set -e
+          mkdir -p V2rayNG/app/libs
+          if ls V2rayNG/app/libs/*.aar >/dev/null 2>&1; then
+            echo "aar already present:"; ls V2rayNG/app/libs
+            exit 0
+          fi
+          if curl -fL --retry 3 -o V2rayNG/app/libs/libv2ray.aar \
+            https://github.com/2dust/AndroidLibXrayLite/releases/latest/download/libv2ray.aar; then
+            echo "Downloaded libv2ray.aar"
+          else
+            echo "Download failed, building from source..."
+            export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_NDK_LATEST_HOME}"
+            git clone --depth 1 https://github.com/2dust/AndroidLibXrayLite.git /tmp/libxray
+            cd /tmp/libxray
+            go install golang.org/x/mobile/cmd/gomobile@latest
+            export PATH="$PATH:$(go env GOPATH)/bin"
+            gomobile init
+            go mod tidy
+            gomobile bind -v -androidapi 21 -ldflags='-s -w' ./
+            cp libv2ray.aar "$GITHUB_WORKSPACE/V2rayNG/app/libs/"
+          fi
+          ls -la "$GITHUB_WORKSPACE/V2rayNG/app/libs"
+
+      - name: Build hev-socks5-tunnel (if the project needs it)
+        run: |
+          if [ -f compile-hevtun.sh ]; then
+            export NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_NDK_LATEST_HOME}"
+            echo "Using NDK: $NDK_HOME"
+            bash compile-hevtun.sh
+          else
+            echo "compile-hevtun.sh not found, skipping."
+          fi
+
+      # ---------- Build ----------
+      - name: Build release APK
+        working-directory: V2rayNG
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      # ---------- Sign ----------
+      - name: Sign APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -e
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          echo "Build-tools: $BT"
+
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            KS_PASS="$KEYSTORE_PASSWORD"; K_ALIAS="$KEY_ALIAS"; K_PASS="$KEY_PASSWORD"
+            echo "Signing with your permanent key."
+          else
+            echo "::warning::No signing secrets found. Using a TEMPORARY key. Future builds will NOT be installable as updates over this one."
+            KS_PASS="v2plas-temp-pass"; K_ALIAS="v2plas"; K_PASS="v2plas-temp-pass"
+            keytool -genkeypair -v -keystore "$RUNNER_TEMP/release.jks" \
+              -alias "$K_ALIAS" -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$KS_PASS" -keypass "$K_PASS" \
+              -dname "CN=V2 Plas, O=V2 Plas, C=IR"
+          fi
+
+          mkdir -p out
+          COUNT=0
+          while IFS= read -r apk; do
+            base=$(basename "$apk" .apk)
+            echo "Signing: $apk"
+            "$BT/zipalign" -f -p 4 "$apk" "$RUNNER_TEMP/aligned.apk"
+            KS_PASS="$KS_PASS" K_PASS="$K_PASS" "$BT/apksigner" sign \
+              --ks "$RUNNER_TEMP/release.jks" \
+              --ks-key-alias "$K_ALIAS" \
+              --ks-pass env:KS_PASS \
+              --key-pass env:K_PASS \
+              --out "out/V2Plas-${base}.apk" "$RUNNER_TEMP/aligned.apk"
+            "$BT/apksigner" verify "out/V2Plas-${base}.apk"
+            COUNT=$((COUNT+1))
+          done < <(find V2rayNG -name "*.apk" -path "*release*" ! -path "*/intermediates/*")
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "ERROR: no APK found after build."
+            find V2rayNG -name "*.apk" || true
+            exit 1
+          fi
+          echo "Signed $COUNT APK(s):"
+          ls -la out
+          rm -f "$RUNNER_TEMP/release.jks"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: V2-Plas-APK
+          path: out/*.apk
+          if-no-files-found: error
+          retention-days: 7
