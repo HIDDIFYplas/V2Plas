@@ -2,6 +2,11 @@ name: Build V2 Plas
 
 on:
   workflow_dispatch:
+    inputs:
+      change_package:
+        description: "Change package name to com.v2plas.app (set false to test with the original package)"
+        type: boolean
+        default: true
 
 jobs:
   build:
@@ -43,6 +48,8 @@ jobs:
 
       # ---------- Rebrand ----------
       - name: Rebrand (applicationId, app name, colors)
+        env:
+          CHANGE_PKG: ${{ inputs.change_package }}
         run: |
           set -e
           cd V2rayNG/app
@@ -53,13 +60,20 @@ jobs:
           [ -f build.gradle ] && GRADLE_FILE=build.gradle
           [ -z "$GRADLE_FILE" ] && { echo "ERROR: app gradle file not found"; exit 1; }
 
-          sed -i 's/applicationId = "com\.v2ray\.ang"/applicationId = "com.v2plas.app"/' "$GRADLE_FILE"
-          sed -i 's/applicationId "com\.v2ray\.ang"/applicationId "com.v2plas.app"/' "$GRADLE_FILE"
-          grep -n "applicationId" "$GRADLE_FILE"
-          if ! grep -q 'com.v2plas.app' "$GRADLE_FILE"; then
-            echo "ERROR: applicationId was not changed. Send me the lines printed above."
-            exit 1
+          if [ "$CHANGE_PKG" != "false" ]; then
+            sed -i 's/applicationId = "com\.v2ray\.ang"/applicationId = "com.v2plas.app"/' "$GRADLE_FILE"
+            sed -i 's/applicationId "com\.v2ray\.ang"/applicationId "com.v2plas.app"/' "$GRADLE_FILE"
+            grep -n "applicationId" "$GRADLE_FILE"
+            if ! grep -q 'com.v2plas.app' "$GRADLE_FILE"; then
+              echo "ERROR: applicationId was not changed. Send me the lines printed above."
+              exit 1
+            fi
+          else
+            echo "Keeping the ORIGINAL package name (test build)."
+            grep -n "applicationId" "$GRADLE_FILE"
           fi
+          echo "== Hardcoded original package in source (for diagnosis) =="
+          grep -rn "com\.v2ray\.ang" src/main --include=*.kt --include=*.xml --include=*.java 2>/dev/null | grep -v "^src/main/java/com/v2ray/ang/.*:package " | grep -v "import com.v2ray.ang" | head -40 || true
 
           # 2) app name in every language file
           for f in src/main/res/values*/strings.xml; do
@@ -118,6 +132,22 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon --stacktrace
+
+      # ---------- Verify ----------
+      - name: Verify native libraries inside the APKs
+        run: |
+          echo "== Prebuilt native libs on disk =="
+          find V2rayNG -name "*.so" ! -path "*/build/*" | head -40
+          echo
+          for apk in $(find V2rayNG -name "*.apk" -path "*release*" ! -path "*/intermediates/*"); do
+            echo "=== $apk ==="
+            unzip -l "$apk" | grep -E "\.so$" || echo "NO .so FILES"
+            for lib in libgojni.so libhev-socks5-tunnel.so; do
+              if ! unzip -l "$apk" | grep -q "$lib"; then
+                echo "::warning::$lib is MISSING in $(basename "$apk")"
+              fi
+            done
+          done
 
       # ---------- Sign ----------
       - name: Sign APK
