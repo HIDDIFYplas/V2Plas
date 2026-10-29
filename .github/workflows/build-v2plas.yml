@@ -101,8 +101,22 @@ jobs:
             echo "aar already present:"; ls V2rayNG/app/libs
             exit 0
           fi
-          if curl -fL --retry 3 -o V2rayNG/app/libs/libv2ray.aar \
-            https://github.com/2dust/AndroidLibXrayLite/releases/latest/download/libv2ray.aar; then
+          # Same approach as the official CI: use the release tag matching the
+          # AndroidLibXrayLite submodule pinned by this v2rayNG version.
+          TAG=$(git -C AndroidLibXrayLite describe --tags --abbrev=0 2>/dev/null || true)
+          if [ -z "$TAG" ]; then
+            git -C AndroidLibXrayLite fetch --tags --unshallow --quiet 2>/dev/null || git -C AndroidLibXrayLite fetch --tags --quiet 2>/dev/null || true
+            TAG=$(git -C AndroidLibXrayLite describe --tags --abbrev=0 2>/dev/null || true)
+          fi
+          echo "AndroidLibXrayLite tag: ${TAG:-<none, using latest>}"
+          if [ -n "$TAG" ]; then
+            URL="https://github.com/2dust/AndroidLibXrayLite/releases/download/$TAG/libv2ray.aar"
+          else
+            URL="https://github.com/2dust/AndroidLibXrayLite/releases/latest/download/libv2ray.aar"
+          fi
+          if curl -fL --retry 3 -o V2rayNG/app/libs/libv2ray.aar "$URL" \
+            || curl -fL --retry 3 -o V2rayNG/app/libs/libv2ray.aar \
+              https://github.com/2dust/AndroidLibXrayLite/releases/latest/download/libv2ray.aar; then
             echo "Downloaded libv2ray.aar"
           else
             echo "Download failed, building from source..."
@@ -124,51 +138,28 @@ jobs:
           export NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_NDK_LATEST_HOME}"
           echo "Using NDK: $NDK_HOME"
 
-          echo "== What the app loads / how gradle finds native libs (diagnosis) =="
-          grep -rn "loadLibrary\|hevsockstun\|hev-socks5" V2rayNG/app/src/main --include=*.kt --include=*.java --include=*.xml | head -20 || true
-          grep -n "jniLibs\|minSdk\|abiFilters\|ndk" V2rayNG/app/build.gradle.kts || true
+          # The project's own script builds the tunnel with the correct JNI package
+          # flags (-DPKGNAME=com/v2ray/ang/service) and stages the result in ./libs
+          bash compile-hevtun.sh
 
-          echo "== compile-hevtun.sh (diagnosis) =="
-          cat compile-hevtun.sh || true
-          echo "== end of script =="
+          echo "== Staged by the script =="
+          find libs -type f | sort
 
-          bash compile-hevtun.sh || echo "::warning::compile-hevtun.sh returned an error"
+          # gradle reads native libs from V2rayNG/app/libs (jniLibs.srcDirs("libs"))
+          mkdir -p V2rayNG/app/libs
+          cp -r libs/* V2rayNG/app/libs/
 
-          FOUND=$(find V2rayNG -name "libhev-socks5-tunnel.so" ! -path "*/build/*" | wc -l)
-          echo "libhev-socks5-tunnel.so copies inside project: $FOUND"
-          echo "== Any hev files left in the workspace =="
-          find "$GITHUB_WORKSPACE" -iname "*hev*" \( -name "*.so" -o -type f -perm -u+x \) ! -path "*/.git/*" ! -path "*/hev-socks5-tunnel/*" | head -20 || true
+          echo "== Final native libs inside the project =="
+          find V2rayNG/app/libs -type f | sort
 
-          if [ "$FOUND" -lt 4 ]; then
-            echo "::warning::Script did not place the library in the project. Building it directly."
-
-            # where does gradle look for jniLibs? (default: src/main/jniLibs)
-            JNI_REL=$(grep -hoE 'jniLibs[^"]*(srcDirs|setSrcDirs)\([^"]*"[^"]+"' V2rayNG/app/build.gradle.kts | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true)
-            [ -z "$JNI_REL" ] && JNI_REL="src/main/jniLibs"
-            DEST="$GITHUB_WORKSPACE/V2rayNG/app/$JNI_REL"
-            echo "Destination: $DEST"
-
-            MINSDK=$(grep -hoE 'minSdk(Version)? *=? *[0-9]+' V2rayNG/app/build.gradle.kts | grep -oE '[0-9]+' | head -1 || true)
-            [ -z "$MINSDK" ] && MINSDK=24
-            echo "minSdk: $MINSDK"
-
-            TMPB=$(mktemp -d)
-            mkdir -p "$TMPB/jni"
-            echo 'include $(call all-subdir-makefiles)' > "$TMPB/jni/Android.mk"
-            ln -s "$GITHUB_WORKSPACE/hev-socks5-tunnel" "$TMPB/jni/hev-socks5-tunnel"
-            cd "$TMPB"
-            "$NDK_HOME/ndk-build" NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk \
-              "APP_ABI=armeabi-v7a arm64-v8a x86 x86_64" APP_PLATFORM=android-$MINSDK \
-              NDK_LIBS_OUT="$TMPB/libs" NDK_OUT="$TMPB/obj" -j4
-            for abi in armeabi-v7a arm64-v8a x86 x86_64; do
-              mkdir -p "$DEST/$abi"
-              cp "$TMPB/libs/$abi/libhev-socks5-tunnel.so" "$DEST/$abi/"
-            done
-            cd "$GITHUB_WORKSPACE"
+          COUNT=$(find V2rayNG/app/libs -name "libhev-socks5-tunnel.so" | wc -l)
+          if [ "$COUNT" -lt 4 ]; then
+            echo "::error::libhev-socks5-tunnel.so found for only $COUNT ABI(s), expected 4"
+            exit 1
           fi
 
-          echo "== Final location of libhev-socks5-tunnel.so =="
-          find V2rayNG -name "libhev-socks5-tunnel.so" ! -path "*/build/*"
+          echo "== JNI class path embedded in the library (must mention com/v2ray/ang/service) =="
+          strings V2rayNG/app/libs/arm64-v8a/libhev-socks5-tunnel.so | grep -E "com/v2ray/ang/service|com_v2ray_ang_service" | head -5 || echo "::warning::JNI package name not found in library"
 
       # ---------- Build ----------
       - name: Build release APK
