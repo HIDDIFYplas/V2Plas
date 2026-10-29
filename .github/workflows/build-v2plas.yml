@@ -18,6 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 2dust/v2rayNG
+          ref: aa4b05503a504a3f2e43818e6ee8ebf1caaa3df0
           submodules: recursive
           fetch-depth: 1
 
@@ -68,22 +69,22 @@ jobs:
               echo "ERROR: applicationId was not changed. Send me the lines printed above."
               exit 1
             fi
-            # launcher shortcuts point to the package name
             sed -i 's/android:targetPackage="com\.v2ray\.ang"/android:targetPackage="com.v2plas.app"/' src/main/res/xml/shortcuts.xml || true
           else
             echo "Keeping the ORIGINAL package name (test build)."
             grep -n "applicationId" "$GRADLE_FILE"
           fi
+
           echo "== Hardcoded original package in source (for diagnosis) =="
           grep -rn "com\.v2ray\.ang" src/main --include=*.kt --include=*.xml --include=*.java 2>/dev/null | grep -v "^src/main/java/com/v2ray/ang/.*:package " | grep -v "import com.v2ray.ang" | head -40 || true
 
-          # 2) app name in every language file
+          # 2) App name in every language file
           for f in src/main/res/values*/strings.xml; do
             sed -i -E 's|(<string name="app_name"[^>]*>)[^<]*(</string>)|\1V2 Plas\2|' "$f"
           done
           grep -rn 'name="app_name"' src/main/res/values*/strings.xml | head -5
 
-          # 3) blue/purple colors (only changes names that already exist)
+          # 3) Blue/purple colors
           for f in src/main/res/values/colors.xml; do
             [ -f "$f" ] || continue
             sed -i -E 's|(<color name="colorPrimary">)[^<]*|\1#5B3FD9|' "$f"
@@ -97,23 +98,28 @@ jobs:
         run: |
           set -e
           mkdir -p V2rayNG/app/libs
+
           if ls V2rayNG/app/libs/*.aar >/dev/null 2>&1; then
-            echo "aar already present:"; ls V2rayNG/app/libs
+            echo "aar already present:"
+            ls V2rayNG/app/libs
             exit 0
           fi
-          # Same approach as the official CI: use the release tag matching the
-          # AndroidLibXrayLite submodule pinned by this v2rayNG version.
+
           TAG=$(git -C AndroidLibXrayLite describe --tags --abbrev=0 2>/dev/null || true)
+
           if [ -z "$TAG" ]; then
             git -C AndroidLibXrayLite fetch --tags --unshallow --quiet 2>/dev/null || git -C AndroidLibXrayLite fetch --tags --quiet 2>/dev/null || true
             TAG=$(git -C AndroidLibXrayLite describe --tags --abbrev=0 2>/dev/null || true)
           fi
+
           echo "AndroidLibXrayLite tag: ${TAG:-<none, using latest>}"
+
           if [ -n "$TAG" ]; then
             URL="https://github.com/2dust/AndroidLibXrayLite/releases/download/$TAG/libv2ray.aar"
           else
             URL="https://github.com/2dust/AndroidLibXrayLite/releases/latest/download/libv2ray.aar"
           fi
+
           if curl -fL --retry 3 -o V2rayNG/app/libs/libv2ray.aar "$URL" \
             || curl -fL --retry 3 -o V2rayNG/app/libs/libv2ray.aar \
               https://github.com/2dust/AndroidLibXrayLite/releases/latest/download/libv2ray.aar; then
@@ -130,6 +136,7 @@ jobs:
             gomobile bind -v -androidapi 21 -ldflags='-s -w' ./
             cp libv2ray.aar "$GITHUB_WORKSPACE/V2rayNG/app/libs/"
           fi
+
           ls -la "$GITHUB_WORKSPACE/V2rayNG/app/libs"
 
       - name: Build hev-socks5-tunnel (native VPN tunnel library)
@@ -138,14 +145,11 @@ jobs:
           export NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_NDK_LATEST_HOME}"
           echo "Using NDK: $NDK_HOME"
 
-          # The project's own script builds the tunnel with the correct JNI package
-          # flags (-DPKGNAME=com/v2ray/ang/service) and stages the result in ./libs
           bash compile-hevtun.sh
 
           echo "== Staged by the script =="
           find libs -type f | sort
 
-          # gradle reads native libs from V2rayNG/app/libs (jniLibs.srcDirs("libs"))
           mkdir -p V2rayNG/app/libs
           cp -r libs/* V2rayNG/app/libs/
 
@@ -153,12 +157,13 @@ jobs:
           find V2rayNG/app/libs -type f | sort
 
           COUNT=$(find V2rayNG/app/libs -name "libhev-socks5-tunnel.so" | wc -l)
+
           if [ "$COUNT" -lt 4 ]; then
             echo "::error::libhev-socks5-tunnel.so found for only $COUNT ABI(s), expected 4"
             exit 1
           fi
 
-          echo "== JNI class path embedded in the library (must mention com/v2ray/ang/service) =="
+          echo "== JNI class path embedded in the library =="
           strings V2rayNG/app/libs/arm64-v8a/libhev-socks5-tunnel.so | grep -E "com/v2ray/ang/service|com_v2ray_ang_service" | head -5 || echo "::warning::JNI package name not found in library"
 
       # ---------- Build ----------
@@ -172,9 +177,11 @@ jobs:
       - name: Verify native libraries inside the APKs
         run: |
           MISSING=0
+
           for apk in $(find V2rayNG -name "*.apk" -path "*release*" ! -path "*/intermediates/*"); do
             echo "=== $apk ==="
             unzip -l "$apk" | grep -E "\.so$" || echo "NO .so FILES"
+
             for lib in libgojni.so libhev-socks5-tunnel.so; do
               if ! unzip -l "$apk" | grep -q "$lib"; then
                 echo "::error::$lib is MISSING in $(basename "$apk")"
@@ -182,10 +189,12 @@ jobs:
               fi
             done
           done
+
           if [ "$MISSING" -eq 1 ]; then
             echo "A required native library is missing. Not delivering a broken APK."
             exit 1
           fi
+
           echo "All required native libraries are present."
 
       # ---------- Sign ----------
@@ -202,11 +211,16 @@ jobs:
 
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
-            KS_PASS="$KEYSTORE_PASSWORD"; K_ALIAS="$KEY_ALIAS"; K_PASS="$KEY_PASSWORD"
+            KS_PASS="$KEYSTORE_PASSWORD"
+            K_ALIAS="$KEY_ALIAS"
+            K_PASS="$KEY_PASSWORD"
             echo "Signing with your permanent key."
           else
             echo "::warning::No signing secrets found. Using a TEMPORARY key. Future builds will NOT be installable as updates over this one."
-            KS_PASS="v2plas-temp-pass"; K_ALIAS="v2plas"; K_PASS="v2plas-temp-pass"
+            KS_PASS="v2plas-temp-pass"
+            K_ALIAS="v2plas"
+            K_PASS="v2plas-temp-pass"
+
             keytool -genkeypair -v -keystore "$RUNNER_TEMP/release.jks" \
               -alias "$K_ALIAS" -keyalg RSA -keysize 2048 -validity 10000 \
               -storepass "$KS_PASS" -keypass "$K_PASS" \
@@ -215,16 +229,20 @@ jobs:
 
           mkdir -p out
           COUNT=0
+
           while IFS= read -r apk; do
             base=$(basename "$apk" .apk)
             echo "Signing: $apk"
+
             "$BT/zipalign" -f -p 4 "$apk" "$RUNNER_TEMP/aligned.apk"
+
             KS_PASS="$KS_PASS" K_PASS="$K_PASS" "$BT/apksigner" sign \
               --ks "$RUNNER_TEMP/release.jks" \
               --ks-key-alias "$K_ALIAS" \
               --ks-pass env:KS_PASS \
               --key-pass env:K_PASS \
               --out "out/V2Plas-${base}.apk" "$RUNNER_TEMP/aligned.apk"
+
             "$BT/apksigner" verify "out/V2Plas-${base}.apk"
             COUNT=$((COUNT+1))
           done < <(find V2rayNG -name "*.apk" -path "*release*" ! -path "*/intermediates/*")
@@ -234,6 +252,7 @@ jobs:
             find V2rayNG -name "*.apk" || true
             exit 1
           fi
+
           echo "Signed $COUNT APK(s):"
           ls -la out
           rm -f "$RUNNER_TEMP/release.jks"
