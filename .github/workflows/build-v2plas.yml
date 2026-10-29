@@ -68,6 +68,8 @@ jobs:
               echo "ERROR: applicationId was not changed. Send me the lines printed above."
               exit 1
             fi
+            # launcher shortcuts point to the package name
+            sed -i 's/android:targetPackage="com\.v2ray\.ang"/android:targetPackage="com.v2plas.app"/' src/main/res/xml/shortcuts.xml || true
           else
             echo "Keeping the ORIGINAL package name (test build)."
             grep -n "applicationId" "$GRADLE_FILE"
@@ -116,38 +118,84 @@ jobs:
           fi
           ls -la "$GITHUB_WORKSPACE/V2rayNG/app/libs"
 
-      - name: Build hev-socks5-tunnel (if the project needs it)
+      - name: Build hev-socks5-tunnel (native VPN tunnel library)
         run: |
-          if [ -f compile-hevtun.sh ]; then
-            export NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_NDK_LATEST_HOME}"
-            echo "Using NDK: $NDK_HOME"
-            bash compile-hevtun.sh
-          else
-            echo "compile-hevtun.sh not found, skipping."
+          set -e
+          export NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_NDK_LATEST_HOME}"
+          echo "Using NDK: $NDK_HOME"
+
+          echo "== What the app loads / how gradle finds native libs (diagnosis) =="
+          grep -rn "loadLibrary\|hevsockstun\|hev-socks5" V2rayNG/app/src/main --include=*.kt --include=*.java --include=*.xml | head -20 || true
+          grep -n "jniLibs\|minSdk\|abiFilters\|ndk" V2rayNG/app/build.gradle.kts || true
+
+          echo "== compile-hevtun.sh (diagnosis) =="
+          cat compile-hevtun.sh || true
+          echo "== end of script =="
+
+          bash compile-hevtun.sh || echo "::warning::compile-hevtun.sh returned an error"
+
+          FOUND=$(find V2rayNG -name "libhev-socks5-tunnel.so" ! -path "*/build/*" | wc -l)
+          echo "libhev-socks5-tunnel.so copies inside project: $FOUND"
+          echo "== Any hev files left in the workspace =="
+          find "$GITHUB_WORKSPACE" -iname "*hev*" \( -name "*.so" -o -type f -perm -u+x \) ! -path "*/.git/*" ! -path "*/hev-socks5-tunnel/*" | head -20 || true
+
+          if [ "$FOUND" -lt 4 ]; then
+            echo "::warning::Script did not place the library in the project. Building it directly."
+
+            # where does gradle look for jniLibs? (default: src/main/jniLibs)
+            JNI_REL=$(grep -hoE 'jniLibs[^"]*(srcDirs|setSrcDirs)\([^"]*"[^"]+"' V2rayNG/app/build.gradle.kts | grep -oE '"[^"]+"' | head -1 | tr -d '"' || true)
+            [ -z "$JNI_REL" ] && JNI_REL="src/main/jniLibs"
+            DEST="$GITHUB_WORKSPACE/V2rayNG/app/$JNI_REL"
+            echo "Destination: $DEST"
+
+            MINSDK=$(grep -hoE 'minSdk(Version)? *=? *[0-9]+' V2rayNG/app/build.gradle.kts | grep -oE '[0-9]+' | head -1 || true)
+            [ -z "$MINSDK" ] && MINSDK=24
+            echo "minSdk: $MINSDK"
+
+            TMPB=$(mktemp -d)
+            mkdir -p "$TMPB/jni"
+            echo 'include $(call all-subdir-makefiles)' > "$TMPB/jni/Android.mk"
+            ln -s "$GITHUB_WORKSPACE/hev-socks5-tunnel" "$TMPB/jni/hev-socks5-tunnel"
+            cd "$TMPB"
+            "$NDK_HOME/ndk-build" NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk \
+              "APP_ABI=armeabi-v7a arm64-v8a x86 x86_64" APP_PLATFORM=android-$MINSDK \
+              NDK_LIBS_OUT="$TMPB/libs" NDK_OUT="$TMPB/obj" -j4
+            for abi in armeabi-v7a arm64-v8a x86 x86_64; do
+              mkdir -p "$DEST/$abi"
+              cp "$TMPB/libs/$abi/libhev-socks5-tunnel.so" "$DEST/$abi/"
+            done
+            cd "$GITHUB_WORKSPACE"
           fi
+
+          echo "== Final location of libhev-socks5-tunnel.so =="
+          find V2rayNG -name "libhev-socks5-tunnel.so" ! -path "*/build/*"
 
       # ---------- Build ----------
       - name: Build release APK
         working-directory: V2rayNG
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon --stacktrace
+          ./gradlew assemblePlaystoreRelease --no-daemon --stacktrace
 
       # ---------- Verify ----------
       - name: Verify native libraries inside the APKs
         run: |
-          echo "== Prebuilt native libs on disk =="
-          find V2rayNG -name "*.so" ! -path "*/build/*" | head -40
-          echo
+          MISSING=0
           for apk in $(find V2rayNG -name "*.apk" -path "*release*" ! -path "*/intermediates/*"); do
             echo "=== $apk ==="
             unzip -l "$apk" | grep -E "\.so$" || echo "NO .so FILES"
             for lib in libgojni.so libhev-socks5-tunnel.so; do
               if ! unzip -l "$apk" | grep -q "$lib"; then
-                echo "::warning::$lib is MISSING in $(basename "$apk")"
+                echo "::error::$lib is MISSING in $(basename "$apk")"
+                MISSING=1
               fi
             done
           done
+          if [ "$MISSING" -eq 1 ]; then
+            echo "A required native library is missing. Not delivering a broken APK."
+            exit 1
+          fi
+          echo "All required native libraries are present."
 
       # ---------- Sign ----------
       - name: Sign APK
