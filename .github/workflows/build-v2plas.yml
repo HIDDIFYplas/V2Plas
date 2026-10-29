@@ -69,22 +69,29 @@ jobs:
               echo "ERROR: applicationId was not changed. Send me the lines printed above."
               exit 1
             fi
+            # launcher shortcuts point to the package name
             sed -i 's/android:targetPackage="com\.v2ray\.ang"/android:targetPackage="com.v2plas.app"/' src/main/res/xml/shortcuts.xml || true
           else
             echo "Keeping the ORIGINAL package name (test build)."
             grep -n "applicationId" "$GRADLE_FILE"
           fi
-
           echo "== Hardcoded original package in source (for diagnosis) =="
           grep -rn "com\.v2ray\.ang" src/main --include=*.kt --include=*.xml --include=*.java 2>/dev/null | grep -v "^src/main/java/com/v2ray/ang/.*:package " | grep -v "import com.v2ray.ang" | head -40 || true
 
-          # 2) App name in every language file
+          # make every build a higher version so it installs over the previous one
+          CUR_VC=$(grep -oE 'versionCode = [0-9]+' "$GRADLE_FILE" | grep -oE '[0-9]+' | head -1)
+          if [ -n "$CUR_VC" ]; then
+            sed -i -E "s/versionCode = [0-9]+/versionCode = $((CUR_VC + GITHUB_RUN_NUMBER))/" "$GRADLE_FILE"
+          fi
+          grep -n "versionCode = " "$GRADLE_FILE" | head -3
+
+          # 2) app name in every language file
           for f in src/main/res/values*/strings.xml; do
             sed -i -E 's|(<string name="app_name"[^>]*>)[^<]*(</string>)|\1V2 Plas\2|' "$f"
           done
           grep -rn 'name="app_name"' src/main/res/values*/strings.xml | head -5
 
-          # 3) Blue/purple colors
+          # 3) blue/purple colors (only changes names that already exist)
           for f in src/main/res/values/colors.xml; do
             [ -f "$f" ] || continue
             sed -i -E 's|(<color name="colorPrimary">)[^<]*|\1#5B3FD9|' "$f"
@@ -93,33 +100,312 @@ jobs:
           done
           echo "Rebrand done."
 
+      # ---------- V2 Plas design (theme + icon) ----------
+      - name: Apply V2 Plas design (theme + icon)
+        run: |
+          set -e
+          APP="V2rayNG/app/src/main"
+          KT="$APP/java/com/v2ray/ang/ui/compose/Theme.kt"
+          [ -f "$KT" ] || { echo "::error::Theme.kt not found"; exit 1; }
+          grep -q "object ThemeManager" "$KT" || { echo "::error::Theme.kt looks different than expected"; exit 1; }
+
+          # ---- 1) Colors / theme (dark space theme, dynamic color off by default) ----
+          cat > "$KT" <<'KOTLIN_EOF'
+          package com.v2ray.ang.ui.compose
+
+          import android.app.Activity
+          import android.os.Build
+          import androidx.compose.foundation.isSystemInDarkTheme
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.darkColorScheme
+          import androidx.compose.material3.dynamicDarkColorScheme
+          import androidx.compose.material3.dynamicLightColorScheme
+          import androidx.compose.material3.lightColorScheme
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.CompositionLocalProvider
+          import androidx.compose.runtime.SideEffect
+          import androidx.compose.runtime.collectAsState
+          import androidx.compose.runtime.compositionLocalOf
+          import androidx.compose.runtime.getValue
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.platform.LocalView
+          import androidx.core.view.WindowCompat
+          import com.v2ray.ang.AppConfig
+          import com.v2ray.ang.handler.MmkvManager
+          import kotlinx.coroutines.flow.MutableStateFlow
+          import kotlinx.coroutines.flow.StateFlow
+          import kotlinx.coroutines.flow.asStateFlow
+
+          private val LightColor = lightColorScheme(
+              primary = Color(0xFF2F5BD6), // Blue
+              onPrimary = Color(0xFFFFFFFF), // White
+              primaryContainer = Color(0xFFDCE6FF), // Pale Blue
+              onPrimaryContainer = Color(0xFF001A52), // Deep Blue
+              secondary = Color(0xFF6A4BDB), // Violet
+              onSecondary = Color(0xFFFFFFFF), // White
+              secondaryContainer = Color(0xFFE8DEFF), // Pale Violet
+              onSecondaryContainer = Color(0xFF1E0A66), // Deep Violet
+              tertiary = Color(0xFF00839A), // Cyan
+              onTertiary = Color(0xFFFFFFFF), // White
+              tertiaryContainer = Color(0xFFA6F0FA), // Pale Cyan
+              onTertiaryContainer = Color(0xFF00363D), // Deep Cyan
+              error = Color(0xFFBA1A1A), // Red
+              errorContainer = Color(0xFFFFDAD6), // Light Red
+              onError = Color(0xFFFFFFFF), // White
+              onErrorContainer = Color(0xFF410002), // Dark Red
+              background = Color(0xFFF7F8FF), // Soft White
+              onBackground = Color(0xFF12142B), // Near Black
+              surface = Color(0xFFF7F8FF), // Soft White
+              onSurface = Color(0xFF12142B), // Near Black
+              surfaceVariant = Color(0xFFE3E6F8), // Light Blue Gray
+              onSurfaceVariant = Color(0xFF454A6B), // Dark Blue Gray
+              outline = Color(0xFF767B9E), // Medium Blue Gray
+              outlineVariant = Color(0xFFC6CAE6), // Light Blue Gray
+              inverseSurface = Color(0xFF2A2D45), // Dark Navy
+              inverseOnSurface = Color(0xFFF0F1FF), // Very Light
+              inversePrimary = Color(0xFFAEC6FF), // Light Blue
+              scrim = Color(0xFF000000), // Black
+              surfaceTint = Color(0xFF2F5BD6), // Blue
+              surfaceContainerLowest = Color(0xFFFFFFFF), // White
+              surfaceContainerLow = Color(0xFFF1F3FF), // Very Light Blue
+              surfaceContainer = Color(0xFFEAECFA), // Light Blue
+              surfaceContainerHigh = Color(0xFFE3E6F6), // Light Blue
+              surfaceContainerHighest = Color(0xFFDCDFF2), // Light Blue
+          )
+
+          private val DarkColor = darkColorScheme(
+              primary = Color(0xFF5B9BFF), // Bright Blue
+              onPrimary = Color(0xFF03123A), // Deep Navy
+              primaryContainer = Color(0xFF1B2A6B), // Indigo
+              onPrimaryContainer = Color(0xFFDCE6FF), // Pale Blue
+              secondary = Color(0xFF9B7BFF), // Violet
+              onSecondary = Color(0xFF1A0B4D), // Deep Violet
+              secondaryContainer = Color(0xFF3A2A8A), // Purple
+              onSecondaryContainer = Color(0xFFE8DEFF), // Pale Violet
+              tertiary = Color(0xFF3DD6E8), // Cyan
+              onTertiary = Color(0xFF00363D), // Deep Cyan
+              tertiaryContainer = Color(0xFF004F58), // Teal
+              onTertiaryContainer = Color(0xFFA6F0FA), // Pale Cyan
+              error = Color(0xFFFFB4AB), // Light Red
+              errorContainer = Color(0xFF93000A), // Dark Red
+              onError = Color(0xFF690005), // Deep Red
+              onErrorContainer = Color(0xFFFFDAD6), // Light Red
+              background = Color(0xFF070B1F), // Space Navy
+              onBackground = Color(0xFFE6E9FF), // Soft White
+              surface = Color(0xFF0A1028), // Dark Navy
+              onSurface = Color(0xFFE6E9FF), // Soft White
+              surfaceVariant = Color(0xFF1A2147), // Navy Gray
+              onSurfaceVariant = Color(0xFFB8BFE0), // Light Blue Gray
+              outline = Color(0xFF5A6399), // Blue Gray
+              outlineVariant = Color(0xFF2A3160), // Dark Blue Gray
+              inverseSurface = Color(0xFFE6E9FF), // Soft White
+              inverseOnSurface = Color(0xFF070B1F), // Space Navy
+              inversePrimary = Color(0xFF2F5BD6), // Blue
+              scrim = Color(0xFF000000), // Black
+              surfaceTint = Color(0xFF5B9BFF), // Bright Blue
+              surfaceContainerLowest = Color(0xFF050816), // Near Black Navy
+              surfaceContainerLow = Color(0xFF0B1030), // Dark Navy
+              surfaceContainer = Color(0xFF0F1538), // Navy
+              surfaceContainerHigh = Color(0xFF161D47), // Navy
+              surfaceContainerHighest = Color(0xFF1E2655), // Navy
+          )
+
+          // Semantic Colors
+          val colorPing = Color(0xFF00C98D) // Green
+          val colorPingRed = Color(0xFFFF4D8D) // Pink Red
+          val colorConfigType = Color(0xFFA78BFA) // Violet
+          val colorFabActive = Color(0xFF4C8DFF) // Blue
+          val colorFabInactiveLight = Color(0xFF9C9C9C) // Gray
+          val colorFabInactiveDark = Color(0xFF3A4170) // Dark Blue Gray
+          val dividerColorLight = Color(0xFFD5D8EE) // Light Blue Gray
+          val dividerColorDark = Color(0xFF2A3160) // Dark Blue Gray
+
+          // Toast Colors 85%
+          val toastNormalBgLight = Color(0xD9353A3E) // Dark Gray
+          val toastNormalBgDark = Color(0xD94A4F54) // Darker Gray
+          val toastSuccessBg = Color(0xD9388E3C) // Green
+          val toastErrorBg = Color(0xD9D50000) // Red
+          val toastInfoBg = Color(0xD93F51B5) // Indigo Blue
+          val toastIconCircleBg = Color(0x33FFFFFF) // Semi-transparent White
+          val toastTextColor = Color.White // White
+
+          object ThemeManager {
+              private val _themeMode = MutableStateFlow(
+                  MmkvManager.decodeSettingsString(AppConfig.PREF_UI_MODE_NIGHT, "0") ?: "0"
+              )
+              val themeMode: StateFlow<String> = _themeMode.asStateFlow()
+
+              private val _dynamicColorEnabled = MutableStateFlow(
+                  MmkvManager.decodeSettingsBool(AppConfig.PREF_DYNAMIC_COLOR, false)
+              )
+              val dynamicColorEnabled: StateFlow<Boolean> = _dynamicColorEnabled.asStateFlow()
+
+              fun setThemeMode(mode: String) {
+                  MmkvManager.encodeSettings(AppConfig.PREF_UI_MODE_NIGHT, mode)
+                  _themeMode.value = mode
+              }
+
+              fun setDynamicColorEnabled(enabled: Boolean) {
+                  MmkvManager.encodeSettings(AppConfig.PREF_DYNAMIC_COLOR, enabled)
+                  _dynamicColorEnabled.value = enabled
+              }
+
+              fun refresh() {
+                  _themeMode.value =
+                      MmkvManager.decodeSettingsString(AppConfig.PREF_UI_MODE_NIGHT, "0") ?: "0"
+                  _dynamicColorEnabled.value =
+                      MmkvManager.decodeSettingsBool(AppConfig.PREF_DYNAMIC_COLOR, false)
+              }
+          }
+
+          @Composable
+          fun resolveDarkTheme(): Boolean {
+              val mode by ThemeManager.themeMode.collectAsState()
+              return when (mode) {
+                  "1" -> false
+                  "2" -> true
+                  else -> true
+              }
+          }
+
+          val LocalDarkTheme = compositionLocalOf { false }
+
+          @Composable
+          fun AppTheme(
+              darkTheme: Boolean = resolveDarkTheme(),
+              content: @Composable () -> Unit
+          ) {
+              val dynamicColor by ThemeManager.dynamicColorEnabled.collectAsState()
+              val context = LocalContext.current
+              val colorScheme = when {
+                  dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+                      if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+                  }
+
+                  darkTheme -> DarkColor
+                  else -> LightColor
+              }
+              val snackbarController = rememberAppSnackbarController()
+
+              val view = LocalView.current
+              if (!view.isInEditMode) {
+                  SideEffect {
+                      val activity = view.context as? Activity ?: return@SideEffect
+                      val window = activity.window
+                      WindowCompat.getInsetsController(window, view).apply {
+                          isAppearanceLightStatusBars = !darkTheme
+                          isAppearanceLightNavigationBars = !darkTheme
+                      }
+                  }
+              }
+
+              CompositionLocalProvider(
+                  LocalDarkTheme provides darkTheme,
+                  LocalAppSnackbar provides snackbarController
+              ) {
+                  MaterialTheme(
+                      colorScheme = colorScheme
+                  ) {
+                      Box(modifier = Modifier.fillMaxSize()) {
+                          AppSnackbarBridge(controller = snackbarController)
+                          content()
+                          AppSnackbarHost(hostState = snackbarController.hostState)
+                      }
+                  }
+              }
+          }
+          KOTLIN_EOF
+
+          # ---- 2) Window background + status bar at startup ----
+          sed -i 's|<color name="window_background_light">[^<]*</color>|<color name="window_background_light">#FF070B1F</color>|' "$APP/res/values/themes.xml"
+          sed -i 's|<color name="window_background_dark">[^<]*</color>|<color name="window_background_dark">#FF070B1F</color>|' "$APP/res/values/themes.xml"
+          sed -i 's|<item name="android:windowLightStatusBar">true</item>|<item name="android:windowLightStatusBar">false</item>|' "$APP/res/values/themes.xml"
+
+          # ---- 3) App icon (shield with V2) ----
+          mkdir -p "$APP/res/drawable"
+          cat > "$APP/res/drawable/ic_v2plas_foreground.xml" <<'XML_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path
+                  android:fillColor="#101A4A"
+                  android:strokeColor="#4C8DFF"
+                  android:strokeWidth="2.6"
+                  android:strokeLineJoin="round"
+                  android:pathData="M54,22 L81,32 L81,55 C81,71 69,81 54,87 C39,81 27,71 27,55 L27,32 Z" />
+              <path
+                  android:strokeColor="#6C5BD6"
+                  android:strokeWidth="1"
+                  android:strokeLineJoin="round"
+                  android:pathData="M54,28 L75,36 L75,55 C75,71 69,74 54,80 C39,74 33,71 33,55 L33,36 Z" />
+              <path
+                  android:fillColor="#FFFFFF"
+                  android:pathData="M35,40 L44,40 L50,58 L56,40 L65,40 L54.5,70 L45.5,70 Z" />
+              <path
+                  android:strokeColor="#7FB0FF"
+                  android:strokeWidth="2.4"
+                  android:strokeLineCap="round"
+                  android:strokeLineJoin="round"
+                  android:pathData="M66,37 C66,32.5 75,32.5 75,37 C75,41 66,45 66,48.5 L75.5,48.5" />
+          </vector>
+          XML_EOF
+          cat > "$APP/res/mipmap-anydpi-v26/ic_launcher.xml" <<'XML_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background" />
+              <foreground android:drawable="@drawable/ic_v2plas_foreground" />
+              <monochrome android:drawable="@drawable/ic_v2plas_foreground" />
+          </adaptive-icon>
+          XML_EOF
+          cat > "$APP/res/mipmap-anydpi-v26/ic_launcher_round.xml" <<'XML_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background" />
+              <foreground android:drawable="@drawable/ic_v2plas_foreground" />
+          </adaptive-icon>
+          XML_EOF
+          cat > "$APP/res/values/ic_launcher_background.xml" <<'XML_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_launcher_background">#070B1F</color>
+          </resources>
+          XML_EOF
+
+          echo "== Design applied =="
+          grep -c "0xFF070B1F" "$KT"
+          grep -n "PREF_DYNAMIC_COLOR" "$KT"
+          grep -n "window_background" "$APP/res/values/themes.xml"
+          ls -la "$APP/res/drawable/ic_v2plas_foreground.xml"
+
       # ---------- Native / core libraries ----------
       - name: Get libv2ray.aar
         run: |
           set -e
           mkdir -p V2rayNG/app/libs
-
           if ls V2rayNG/app/libs/*.aar >/dev/null 2>&1; then
-            echo "aar already present:"
-            ls V2rayNG/app/libs
+            echo "aar already present:"; ls V2rayNG/app/libs
             exit 0
           fi
-
+          # Same approach as the official CI: use the release tag matching the
+          # AndroidLibXrayLite submodule pinned by this v2rayNG version.
           TAG=$(git -C AndroidLibXrayLite describe --tags --abbrev=0 2>/dev/null || true)
-
           if [ -z "$TAG" ]; then
             git -C AndroidLibXrayLite fetch --tags --unshallow --quiet 2>/dev/null || git -C AndroidLibXrayLite fetch --tags --quiet 2>/dev/null || true
             TAG=$(git -C AndroidLibXrayLite describe --tags --abbrev=0 2>/dev/null || true)
           fi
-
           echo "AndroidLibXrayLite tag: ${TAG:-<none, using latest>}"
-
           if [ -n "$TAG" ]; then
             URL="https://github.com/2dust/AndroidLibXrayLite/releases/download/$TAG/libv2ray.aar"
           else
             URL="https://github.com/2dust/AndroidLibXrayLite/releases/latest/download/libv2ray.aar"
           fi
-
           if curl -fL --retry 3 -o V2rayNG/app/libs/libv2ray.aar "$URL" \
             || curl -fL --retry 3 -o V2rayNG/app/libs/libv2ray.aar \
               https://github.com/2dust/AndroidLibXrayLite/releases/latest/download/libv2ray.aar; then
@@ -136,7 +422,6 @@ jobs:
             gomobile bind -v -androidapi 21 -ldflags='-s -w' ./
             cp libv2ray.aar "$GITHUB_WORKSPACE/V2rayNG/app/libs/"
           fi
-
           ls -la "$GITHUB_WORKSPACE/V2rayNG/app/libs"
 
       - name: Build hev-socks5-tunnel (native VPN tunnel library)
@@ -145,11 +430,14 @@ jobs:
           export NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_NDK_LATEST_HOME}"
           echo "Using NDK: $NDK_HOME"
 
+          # The project's own script builds the tunnel with the correct JNI package
+          # flags (-DPKGNAME=com/v2ray/ang/service) and stages the result in ./libs
           bash compile-hevtun.sh
 
           echo "== Staged by the script =="
           find libs -type f | sort
 
+          # gradle reads native libs from V2rayNG/app/libs (jniLibs.srcDirs("libs"))
           mkdir -p V2rayNG/app/libs
           cp -r libs/* V2rayNG/app/libs/
 
@@ -157,13 +445,12 @@ jobs:
           find V2rayNG/app/libs -type f | sort
 
           COUNT=$(find V2rayNG/app/libs -name "libhev-socks5-tunnel.so" | wc -l)
-
           if [ "$COUNT" -lt 4 ]; then
             echo "::error::libhev-socks5-tunnel.so found for only $COUNT ABI(s), expected 4"
             exit 1
           fi
 
-          echo "== JNI class path embedded in the library =="
+          echo "== JNI class path embedded in the library (must mention com/v2ray/ang/service) =="
           strings V2rayNG/app/libs/arm64-v8a/libhev-socks5-tunnel.so | grep -E "com/v2ray/ang/service|com_v2ray_ang_service" | head -5 || echo "::warning::JNI package name not found in library"
 
       # ---------- Build ----------
@@ -177,11 +464,9 @@ jobs:
       - name: Verify native libraries inside the APKs
         run: |
           MISSING=0
-
           for apk in $(find V2rayNG -name "*.apk" -path "*release*" ! -path "*/intermediates/*"); do
             echo "=== $apk ==="
             unzip -l "$apk" | grep -E "\.so$" || echo "NO .so FILES"
-
             for lib in libgojni.so libhev-socks5-tunnel.so; do
               if ! unzip -l "$apk" | grep -q "$lib"; then
                 echo "::error::$lib is MISSING in $(basename "$apk")"
@@ -189,12 +474,10 @@ jobs:
               fi
             done
           done
-
           if [ "$MISSING" -eq 1 ]; then
             echo "A required native library is missing. Not delivering a broken APK."
             exit 1
           fi
-
           echo "All required native libraries are present."
 
       # ---------- Sign ----------
@@ -210,17 +493,18 @@ jobs:
           echo "Build-tools: $BT"
 
           if [ -n "$KEYSTORE_BASE64" ]; then
+            if [ -z "$KEYSTORE_PASSWORD" ]; then
+              echo "::error::KEYSTORE_BASE64 exists but the KEYSTORE_PASSWORD secret is missing."
+              exit 1
+            fi
             echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
             KS_PASS="$KEYSTORE_PASSWORD"
-            K_ALIAS="$KEY_ALIAS"
-            K_PASS="$KEY_PASSWORD"
+            K_ALIAS="${KEY_ALIAS:-v2plas}"
+            K_PASS="${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
             echo "Signing with your permanent key."
           else
             echo "::warning::No signing secrets found. Using a TEMPORARY key. Future builds will NOT be installable as updates over this one."
-            KS_PASS="v2plas-temp-pass"
-            K_ALIAS="v2plas"
-            K_PASS="v2plas-temp-pass"
-
+            KS_PASS="v2plas-temp-pass"; K_ALIAS="v2plas"; K_PASS="v2plas-temp-pass"
             keytool -genkeypair -v -keystore "$RUNNER_TEMP/release.jks" \
               -alias "$K_ALIAS" -keyalg RSA -keysize 2048 -validity 10000 \
               -storepass "$KS_PASS" -keypass "$K_PASS" \
@@ -229,20 +513,16 @@ jobs:
 
           mkdir -p out
           COUNT=0
-
           while IFS= read -r apk; do
             base=$(basename "$apk" .apk)
             echo "Signing: $apk"
-
             "$BT/zipalign" -f -p 4 "$apk" "$RUNNER_TEMP/aligned.apk"
-
             KS_PASS="$KS_PASS" K_PASS="$K_PASS" "$BT/apksigner" sign \
               --ks "$RUNNER_TEMP/release.jks" \
               --ks-key-alias "$K_ALIAS" \
               --ks-pass env:KS_PASS \
               --key-pass env:K_PASS \
               --out "out/V2Plas-${base}.apk" "$RUNNER_TEMP/aligned.apk"
-
             "$BT/apksigner" verify "out/V2Plas-${base}.apk"
             COUNT=$((COUNT+1))
           done < <(find V2rayNG -name "*.apk" -path "*release*" ! -path "*/intermediates/*")
@@ -252,7 +532,6 @@ jobs:
             find V2rayNG -name "*.apk" || true
             exit 1
           fi
-
           echo "Signed $COUNT APK(s):"
           ls -la out
           rm -f "$RUNNER_TEMP/release.jks"
