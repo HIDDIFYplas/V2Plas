@@ -7,11 +7,17 @@ on:
         description: "Change package name to com.v2plas.app (set false to test with the original package)"
         type: boolean
         default: true
+      publish:
+        description: "Publish the APK to the public Releases page (leave off for test builds)"
+        type: boolean
+        default: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout v2rayNG (with submodules)
@@ -21,6 +27,55 @@ jobs:
           ref: aa4b05503a504a3f2e43818e6ee8ebf1caaa3df0
           submodules: recursive
           fetch-depth: 1
+
+      - name: Checkout V2 Plas overlay files (this repository)
+        uses: actions/checkout@v4
+        with:
+          path: plas
+
+      - name: Apply V2 Plas overlay (announcements, About page)
+        run: |
+          set -e
+          MAIN="V2rayNG/app/src/main"
+          KT_BASE="$MAIN/java/com/v2ray/ang"
+
+          # Every file in overlay/ names its destination in a "DEST: ..." line.
+          #  - .kt files: path relative to java/com/v2ray/ang   (e.g. DEST: ui/AboutActivity.kt)
+          #  - other files (xml...): path relative to src/main  (e.g. DEST: res/drawable/x.xml)
+          if [ -d plas/overlay ]; then
+            for f in plas/overlay/*; do
+              [ -f "$f" ] || continue
+              DEST=$(grep -m1 -oE 'DEST: [A-Za-z0-9_/.-]+' "$f" | sed 's/DEST: //' || true)
+              if [ -z "$DEST" ]; then
+                echo "::error::$f has no 'DEST: ...' line near the top"
+                exit 1
+              fi
+              case "$f" in
+                *.kt) TARGET="$KT_BASE/$DEST" ;;
+                *)    TARGET="$MAIN/$DEST" ;;
+              esac
+              mkdir -p "$(dirname "$TARGET")"
+              cp "$f" "$TARGET"
+              echo "overlay: $f -> $TARGET"
+            done
+          else
+            echo "No overlay folder found, skipping."
+          fi
+
+          # Show the announcement dialog on the main screen (only if its file exists)
+          if [ -f plas/overlay/RemoteAnnouncement.kt ]; then
+            python3 - <<'PY'
+          import sys
+          p = "V2rayNG/app/src/main/java/com/v2ray/ang/ui/main/MainActivity.kt"
+          s = open(p, encoding="utf-8").read()
+          old = "        BackHandler { moveTaskToBack(false) }\n        MainScreen("
+          new = "        BackHandler { moveTaskToBack(false) }\n        com.v2ray.ang.ui.compose.RemoteAnnouncementHost()\n        MainScreen("
+          if old not in s:
+              sys.exit("ERROR: MainActivity.kt anchor not found")
+          open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
+          print("MainActivity patched")
+          PY
+          fi
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -384,6 +439,7 @@ jobs:
           grep -n "window_background" "$APP/res/values/themes.xml"
           ls -la "$APP/res/drawable/ic_v2plas_foreground.xml"
 
+
       # ---------- Native / core libraries ----------
       - name: Get libv2ray.aar
         run: |
@@ -543,3 +599,31 @@ jobs:
           path: out/*.apk
           if-no-files-found: error
           retention-days: 7
+
+      - name: Publish APK to GitHub Releases (public download)
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          VERSION=$(grep -oE 'versionName = "[^"]+"' V2rayNG/app/build.gradle.kts | head -1 | grep -oE '"[^"]+"' | tr -d '"' || true)
+          TAG="build-${GITHUB_RUN_NUMBER}"
+
+          FILES=$(ls out/*universal*.apk out/*arm64-v8a*.apk 2>/dev/null || true)
+          if [ -z "$FILES" ]; then
+            echo "::error::No universal/arm64 APK found to publish"
+            ls -la out
+            exit 1
+          fi
+
+          NOTES="V2 Plas ${VERSION:-} (build ${GITHUB_RUN_NUMBER})
+
+          دانلود: اگر مطمئن نیستید، فایل universal را نصب کنید. گوشی‌های جدید می‌توانند arm64-v8a را نصب کنند که کوچک‌تر است.
+          همیشه همان نوع فایل را نصب کنید تا نسخهٔ جدید روی قبلی نصب شود.
+
+          Telegram: @HIDDIFY_plas"
+
+          gh release create "$TAG" $FILES --repo "$GITHUB_REPOSITORY" \
+            --title "V2 Plas ${VERSION:-} (build ${GITHUB_RUN_NUMBER})" \
+            --notes "$NOTES" --latest
+          echo "Published: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
