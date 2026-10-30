@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "id": "1",
+  "title": "به V2 Plas خوش آمدید",
+  "message": "کانال تلگرام ما را دنبال کنید و از کانفیگ‌های رایگان لذت ببرید.",
+  "buttonText": "عضویت در کانال",
+  "buttonUrl": "https://t.me/HIDDIFY_plas",
+  "autoCloseSeconds": 10,
+  "showOnce": false
+}
