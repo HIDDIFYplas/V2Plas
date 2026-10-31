@@ -45,6 +45,7 @@ jobs:
           if [ -d plas/overlay ]; then
             for f in plas/overlay/*; do
               [ -f "$f" ] || continue
+              case "$f" in *.py) continue ;; esac
               DEST=$(grep -m1 -oE 'DEST: [A-Za-z0-9_/.-]+' "$f" | sed 's/DEST: //' || true)
               if [ -z "$DEST" ]; then
                 echo "::error::$f has no 'DEST: ...' line near the top"
@@ -75,6 +76,11 @@ jobs:
           open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
           print("MainActivity patched")
           PY
+          fi
+
+          # Extra patches written in the repository (UI redesign): overlay/patch.py
+          if [ -f plas/overlay/patch.py ]; then
+            python3 plas/overlay/patch.py
           fi
 
       - name: Setup Java 17
