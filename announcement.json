@@ -7,6 +7,6 @@
   "buttonUrl": "https://t.me/HIDDIFY_plas",
   "autoCloseSeconds": 10,
   "showOnce": false,
-  "intervalHours": 6,
+  "intervalHours": ,
   "imageUrl": ""
 }
