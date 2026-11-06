@@ -1,0 +1,32 @@
+V2 Plas quota-safe static-feed update — upload to TEST repository only.
+
+Replace:
+  overlay/V2PlasApp.kt
+  overlay/FreeConfigRepository.kt
+  overlay/RemoteAnnouncement.kt
+  overlay/FreeQuotaServiceMonitor.kt
+  overlay/patch.py
+  overlay/AboutActivity.kt
+  tests/validate_ui_patch.py
+  .github/workflows/build-v2plas.yml
+  README_FA.md
+  announcement.json
+  UPLOAD_PATHS.txt
+
+Add:
+  overlay/FeedEndpoint.kt
+  worker/V2Plas-worker-pages.js
+  public/manifest.json
+  public/configs.json
+  public/announcement.json
+  public/_headers
+
+Required setup before expecting automatic updates:
+  1. Deploy worker/V2Plas-worker-pages.js to the existing Cloudflare Worker.
+  2. Configure Cloudflare Pages to publish the public/ directory from the
+     same repository and branch that the Worker uses for PUBLIC_FEED_GITHUB_REPO.
+  3. Add GitHub Actions repository variable V2PLAS_FEED_BASE_URL to the TEST
+     repository, using the actual HTTPS Pages base URL.
+
+Do not upload this ZIP as a single GitHub file. Extract it and preserve paths.
+Do not modify the production repository V2Plas before test and device checks pass.
