@@ -1,0 +1,16 @@
+V2 Plas feed refresh fix - upload to the TEST repository only.
+
+Replace (keep paths):
+  overlay/FreeConfigRepository.kt
+  overlay/V2PlasApp.kt
+  tests/validate_ui_patch.py
+  README_FA.md
+
+No Worker redeploy, Pages change or repository-variable change is needed.
+Then run the "Build V2Plas" workflow again and install the new APK.
+
+Behavior change:
+  - success -> next automatic check after 15 min
+  - failed attempt -> retry after 5 min (was: locked for 6 hours)
+  - manual refresh button -> real manifest check, min 30 s apart
+  - the app now shows the error code in the status line (e.g. manifest_http_404)
