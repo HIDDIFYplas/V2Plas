@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "id": "1",
+  "title": "🎉به V2 Plas خوش آمدید🎉",
+  "message": "کانفیگ های جدید تو کانال قرار داده شده👇🏻🔥.",
+  "buttonText": "جوین کانال شو ",
+  "buttonUrl": "https://t.me/HIDDIFY_plas",
+  "autoCloseSeconds": 10,
+  "showOnce": false,
+  "intervalHours": 12,
+  "imageUrl": ""
+}
