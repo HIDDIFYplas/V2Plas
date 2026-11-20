@@ -1,0 +1,9 @@
+/manifest.json
+  Cache-Control: public, max-age=0, must-revalidate
+  X-Content-Type-Options: nosniff
+/configs.json
+  Cache-Control: public, max-age=0, must-revalidate
+  X-Content-Type-Options: nosniff
+/announcement.json
+  Cache-Control: public, max-age=0, must-revalidate
+  X-Content-Type-Options: nosniff
