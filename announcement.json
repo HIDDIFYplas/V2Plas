@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "id": "1",
+  "title": "✅ آپدیت جدید V2PLAS عرضه شد",
+  "message": "👇🏻⚡نسخه جدید را دریافت کنید از ربات",
+  "buttonText": "🔰دانلود نسخه 1.1.04",
+  "buttonUrl": "https://t.me/Securitplas1_bot?start=button_NYpawjst6l",
+  "autoCloseSeconds": 10,
+  "showOnce": false,
+  "intervalHours": 12,
+  "imageUrl": ""
+}
